@@ -1,9 +1,9 @@
 # 权限管理
-**授权**
-```sql
+授权
+
 grant <role> to <username>;
-```
-**回收权限**
+
+回收权限
 
 revoke  <role> from <username>;
 
