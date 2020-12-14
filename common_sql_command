@@ -420,3 +420,370 @@ alter database recover managed standby database using current logfile disconnect
 alter database recover managed standby database cancel; --取消
 alter database recover managed standby database delay 120 disconnect from session; --延时120分钟
 alter database recover managed standby database finsh force; --强制完成同步，停止RFS进程
+
+
+--查勒索病毒
+select distinct name,owner from dba_source where name like '%DBMS_CORE_%';
+select trigger_name,owner from dba_triggers where trigger_name like '%DBMS_CORE_%';
+
+--清理病毒JOB
+select case when mod(rownum,10000)=0 then 'commit;'
+else 'exec dbms_job.remove('||job||');' 
+end a
+from dba_jobs 
+where log_user='BIGDATA_ADMIN';
+
+--获取建表语句
+select dbms_metadata.get_ddl('TABLE','TABLE_KEYS','ETL') from dual;
+
+--对索引进行碎片整理
+alter index etl.PK_ROW_LOGS coalesce;
+
+--固定执行计划
+var n number
+begin
+:n:=dbms_spm.load_plans_from_cursor_cache(sql_id=>'3xfz43jaqsa97', plan_hash_value=>3356672385, fixed =>'YES', enabled=>'YES');
+end;
+/
+
+--查询索引状态信息
+select owner,index_name,index_type,table_owner,table_name,table_type,partitioned,status from dba_indexes where owner='ETL' and index_name in ('PK_ROW_LOGS','IX_TABLE_KEYS_SCAN','IX_ROW_LOGS','IX_TABLE_KEYS_KEY');
+
+--查询分区表本地索引状态信息
+select index_owner,index_name,composite,partition_name,status from dba_ind_partitions where index_owner='BIGDATA_ADMIN' and index_name in ('IDX_STKCN_TOP_ACTV_TRD_INC','IDX_STKCN_TOP_ACTV_TRD_INC_RID','IDX_STKCN_TOP_ACTV_TRD_INC_UPD');
+
+--发现长事物
+set lin 126
+col message for a86
+col TIME_REMAINING heading 'Time|Remaining' for 99999
+select sid,serial#,message,time_remaining 
+from v$session_longops 
+where time_remaining > 0
+/
+
+--查看现在正在运行的SQL语句
+SELECT b.sid,  
+       b.username,  
+       b.serial#,  
+       spid,  
+       paddr,  
+       sql_text,  
+       b.machine  
+FROM v$process a, v$session b, v$sqlarea c  
+WHERE a.addr = b.paddr  
+AND b.sql_hash_value = c.hash_value
+
+declare 
+xx PLS_INTEGER; 
+BEGIN 
+xx :=dbms_spm.drop_sql_plan_baseline(sql_handle=>'SQL_99cf1b5316fdc039',plan_name=>null); 
+END; 
+/
+
+--查进度（RMAN）
+select sid,opname,serial#,context,sofar,totalwork,round(sofar/totalwork*100,2) "%_complete"
+from v$session_longops
+where opname like 'RMAN%'
+and opname not like '%aggregate%'
+and totalwork  != 0
+and sofar <> totalwork
+order by "%_complete" desc 
+
+
+
+--查看临时表空间
+过一段时间，当临时表空间增长到一定的程度，再新建一个temp表空间，删除tempa表空间，即：
+
+create temporary tablespace TEMP TEMPFILE '/opt/app/oracle/oradata/orcl/temp01.dbf ' SIZE 8192M REUSE AUTOEXTEND ON NEXT 1024K MAXSIZE UNLIMITED;   --创建中转临时表空间 
+alter database default temporary tablespace temp;    --改变缺省临时表空间
+drop tablespace tempa including contents and datafiles;  --删除原来临时表空间 
+
+这样就可以保证临时表空间不至于过大，防止过多的占用有限的硬盘空间。
+
+
+--用下面语句可查看当前临时表空间使用空间大小与正在占用临时表空间的sql语句：
+
+select sess.SID, segtype, blocks * 8 / 1000 "MB", sql_text
+  from v$sort_usage sort, v$session sess, v$sql sql
+ where sort.SESSION_ADDR = sess.SADDR
+   and sql.ADDRESS = sess.SQL_ADDRESS
+ order by blocks desc;
+
+--下面语句查询临时表空间的空闲程度：
+
+select 'the ' || name || ' temp tablespaces ' || tablespace_name ||
+       ' idle ' ||
+       round(100 - (s.tot_used_blocks / s.total_blocks) * 100, 3) ||
+       '% at ' || to_char(sysdate, 'yyyymmddhh24miss')
+  from (select d.tablespace_name tablespace_name,
+               nvl(sum(used_blocks), 0) tot_used_blocks,
+               sum(blocks) total_blocks
+          from v$sort_segment v, dba_temp_files d
+         where d.tablespace_name = v.tablespace_name(+)
+         group by d.tablespace_name) s,
+       v$database;
+	   
+--隐藏参数
+SELECT   ksppinm, ksppstvl, ksppdesc
+  FROM   x$ksppi x, x$ksppcv y
+ WHERE   x.indx = y.indx AND  ksppinm = '_small_table_threshold';
+
+ --测试CPU，10s左右为正常
+set serveroutput on
+set timing on
+declare
+n number :=0;
+begin
+for f in 1..10000000
+loop
+n :=MOD(n,999999) + SQRT (f);
+end loop;
+dbms_output.put_line('Res = '||to_char(n,'999999.99'));
+end;
+/
+
+1.alter session set current_schema=ETL
+2.alter session set statistics_level='ALL';
+3.跑一遍这条SQL
+4.select * from table(dbms_xplan.display_cursor('',format=>'IOSTATS LAST'))
+5.截图发来
+
+***************************************************************************************************************
+*********************************************查看表的统计信息*************************************************
+***************************************************************************************************************
+select table_name,num_rows,blocks,empty_blocks,avg_space,chain_cnt,avg_row_len,global_stats,user_stats,sample_size,
+to_char(t.last_analyzed,'MM-DD-YYYY') from dba_tables t
+where owner=upper(nvl('&owner',user))
+and table_name=upper('&table_name')
+/
+
+***************************************************************************************************************
+*******************************************查看表上的列的统计信息*********************************************
+***************************************************************************************************************
+set lines 200
+col col for a20
+select column_name,
+decode(t.data_type,
+'NUMBER',t.data_type||'('||
+decode(t.data_precision,null,t.data_length||')',
+t.data_precision||','||t.data_scale||')'),
+'DATA',t.data_type,
+'LONG',t.data_type,
+'LONG RAW',t.data_type,
+'ROWID',t.data_type,
+'MLSLABEL',t.data_type,
+t.data_type||'('||t.data_length||')') ||' '||
+decode(t.nullable,'N','NOT NULL',
+'n','NOT NULL',
+NULL) col,
+num_distinct,
+density,
+num_buckets,
+num_nulls,
+global_stats,
+user_stats,
+sample_size,
+to_char(t.last_analyzed,'MM-DD-YYYY') from dba_tab_cols t
+where table_name=upper('&table_name') and owner=upper(nvl('&owner',user))
+/
+
+***************************************************************************************************************
+*********************************************查看索引的统计信息**********************************************
+***************************************************************************************************************
+select index_name,
+uniqueness,
+blevel blev,
+leaf_blocks,
+distinct_keys,
+num_rows,
+avg_leaf_blocks_per_key,
+avg_data_blocks_per_key,
+clustering_factor,
+global_stats,
+user_stats,
+sample_size,
+to_char(t.last_analyzed,'MM-DD-YYYY')
+from dba_indexes t
+where table_name=upper('&TABLE_NAME')
+and table_owner=upper(nvl('&OWNER',user))
+/
+
+--看哪一步慢
+select SQL_PLAN_LINE_ID,count(*),SQL_PLAN_HASH_VALUE,h.sql_id
+from dba_hist_active_sess_history h ,dba_hist_sqlstat st
+where st.sql_id = '&sqlid'   and h.sql_id = st.sql_id   and st.snap_id = h.snap_id
+and st.dbid = h.dbid  and st.instance_number = h.instance_number
+group by SQL_PLAN_HASH_VALUE,SQL_PLAN_LINE_ID,h.sql_id;
+
+
+create or replace procedure p_create_sqltuning_task(p_sql_id varchar2) is
+v_tuning_task varchar2(30);
+v_sql_id v$session.sql_id%type;
+begin
+v_sql_id := p_sql_id;
+v_tuning_task := dbms_sqltune.create_tuning_task(sql_id=> v_sql_id);
+dbms_sqltune.execute_tuning_task(v_tuning_task);
+dbms_output.put_line('This Tuning task name is :      '|| v_tuning_task);
+dbms_output.put_line('----------Please using follow command query SQL tuning report!----------');
+dbms_output.put_line('set lines 500 pages 9999');
+dbms_output.put_line('set long 100000');
+dbms_output.put_line('select dbms_sqltune.report_tuning_task('''||v_tuning_task||''') from dual;');
+end;
+/
+
+set serveroutput on
+exec p_create_sqltuning_task('你的SQL_ID');
+
+
+--检查SYSAUX各类文件所占空间
+SELECT occupant_name "Item", 
+       space_usage_kbytes / 1048576 "Space Used (GB)", 
+       schema_name "Schema", 
+       move_procedure "Move Procedure" 
+  FROM v$sysaux_occupants 
+ORDER BY 1 ;
+
+SELECT * FROM DBA_HIST_WR_CONTROL; --查看快照生产间隔及保留时间
+
+--修改快照保留时长 60分钟1次，60分钟*24小时*8天=11520
+begin 
+         dbms_workload_repository.modify_snapshot_settings ( 
+            interval => 60, 
+            retention => 11520, 
+            topnsql => 100 
+          ); 
+end; 
+/
+
+
+select DBID,min(snap_id), max(snap_id)  from dba_hist_snapshot group by dbid; --LOW&HIGH
+
+BEGIN
+     DBMS_WORKLOAD_REPOSITORY.DROP_SNAPSHOT_RANGE(
+      LOW_SNAP_ID => 54670,
+      HIGH_SNAP_ID => 54860,
+      DBID => 2568321342);
+END;
+/
+
+
+select min(snap_id), max(snap_id)  from dba_hist_snapshot where dbid = 2568321342;
+
+select dbid, status, count(*)  from wrm$_snapshot  group by dbid, status;
+
+--扩展表空间前查询
+set lines 200
+set pages 1000
+col file_name for a50
+select file_name,tablespace_name,autoextensible,bytes/1024/1024,maxbytes/1024/1024 from dba_data_files order by 2,1;
+
+--查询低效SQL
+SELECT EXECUTIONS, DISK_READS, BUFFER_GETS,
+ROUND ((BUFFER_GETS-DISK_READS)/BUFFER_GETS, 2) Hit_radio,
+ROUND (DISK_READS/EXECUTIONS, 2) Reads_per_run,SQL_TEXT
+FROM   V$SQLAREA
+WHERE (BUFFER_GETS-DISK_READS)/BUFFER_GETS < 0.8
+AND EXECUTIONS>0
+AND  BUFFER_GETS > 0 
+ORDER BY 4 DESC
+
+--分批次删文件
+ls | xargs -n 10 rm -fr ls
+
+--打开共享游标（自动绑定变量）
+alter session set cursor_sharing='FORCE';  --EXACT、FORCE、SIMILAR
+--打开会话追踪
+alter session set sql_trace=true;
+--spool set
+set colsep' ';　　　 //域输出分隔符
+set echo off;　　　　//显示start启动的脚本中的每个sql命令，缺省为on
+set feedback off;　　//回显本次sql命令处理的记录条数，缺省为on
+set heading off;　　 //输出域标题，缺省为on
+set pagesize 0;　　　//输出每页行数，缺省为24,为了避免分页，可设定为0。
+set termout off;　　 //显示脚本中的命令的执行结果，缺省为on
+set trimout on;　　　//去除标准输出每行的拖尾空格，缺省为off
+set trimspool on;　　//去除重定向（spool）输出每行的拖尾空格，缺省为off
+
+--存储过程替换是发生等待
+--Oracle ORA-04021 等待锁定对象时发生超时
+select  name　from v$db_object_cache
+where owner='BD_PROC'
+and type in('PROCEDURE','FUNCTION')
+and locks > 0
+and pins > 0;
+
+select sid
+from v$access
+where owner='BD_PROC'
+and OBJECT = 'PROC_BAS_SPCL_NTC_BND';
+
+SELECT * FROM V$SESSION WHERE SID = 1713;
+
+ALTER SYSTEM KILL SESSION '1713,35367';
+
+
+--Move表
+--开启行移动
+alter table table_name enable row movement;
+--move表
+alter table table_name move;
+--重建索引
+--关闭行移动
+alter table table_name disable row movement;
+
+--分批次提交删除数据
+--CREATE OR REPLACE PROCEDURE ETL.CLEAN_HIS_ROW_LOGS IS
+DECLARE
+  v_brk number(2):=1;
+begin
+  while v_brk = 1 loop
+    select count(1) into v_brk from BIGDATA_ADMIN.FPMCN_BRK_UNIT_NAV where rownum < 2;
+    delete from BIGDATA_ADMIN.FPMCN_BRK_UNIT_NAV where rownum < 50001;
+    commit;
+end loop;
+end;
+--分批次将LOB字段置空
+DECLARE
+  v_brk number(2):=1;
+begin
+  while v_brk = 1 loop
+    SELECT COUNT(1) INTO v_brk FROM BIGDATA_ADMIN.TXT_BLT_ANN WHERE UPD_TIME < TRUNC(SYSDATE-180) AND LENGTH(ANN_CONT)>0 AND ROWNUM < 2;
+    for i in (select ID from BIGDATA_ADMIN.TXT_BLT_ANN WHERE UPD_TIME < TRUNC(SYSDATE-180) AND LENGTH(ANN_CONT)>0 AND ROWNUM<201) loop
+        update BIGDATA_ADMIN.TXT_BLT_ANN set ANN_CONT=NULL where ID=i.id;
+    end loop;
+    commit;
+end loop;
+end;
+
+ALTER TABLE BIGDATA_ADMIN.TXT_BLT_ANN ENABLE ROW MOVEMENT;
+ALTER TABLE BIGDATA_ADMIN.TXT_BLT_ANN MODIFY LOB ( ANN_CONT ) (SHRINK  SPACE);
+ALTER TABLE BIGDATA_ADMIN.TXT_BLT_ANN DISABLE ROW MOVEMENT;
+
+
+批量删除视图
+select concat("drop VIEW ",TABLE_SCHEMA,".",TABLE_NAME,";") 
+from information_schema.VIEWS where table_schema in ("xx","xx2");
+
+批量创建视图
+select concat("create SQL SECURITY INVOKER VIEW ",TABLE_SCHEMA,".",TABLE_NAME," as ",VIEW_DEFINITION,";") 
+from information_schema.VIEWS where table_schema in ("xx","xx2");
+
+查询主键索引的SQL：
+SELECT
+table_schema 库名, table_name 表名, index_name 索引名称, index_type 索引类型,NON_UNIQUE 是否唯一,
+GROUP_CONCAT(column_name order by SEQ_IN_INDEX) 索引使用的列
+FROM
+information_schema.STATISTICS
+where index_name = 'PRIMARY'  and table_schema not in ('mysql','information_schema')
+GROUP BY table_schema , table_name , index_type, index_name,NON_UNIQUE;
+
+查询普通索引的SQL：
+SELECT
+table_schema 库名, table_name 表名, index_name 索引名称, index_type 索引类型,NON_UNIQUE 是否唯一,
+GROUP_CONCAT(column_name order by SEQ_IN_INDEX) 索引使用的列
+FROM
+information_schema.STATISTICS
+where index_name != 'PRIMARY' and table_schema not in ('mysql','information_schema')
+GROUP BY table_schema , table_name , index_type, index_name,NON_UNIQUE;
+
+EXPDP And IMPDP - UDE-31626 And ORA-31626 (job Does Not Exist) At End Of Job, While No Errors In The Logfile (Doc ID 1970322.1)
