@@ -7,6 +7,19 @@ grant <role> to <username>;
 
 revoke  <role> from <username>;
 
+查(系统)权限
+select privilege from dba_sys_privs where grantee='BDDK' or grantee in (select granted_role from dba_role_privs where grantee='BDDK');
+
+select privilege from dba_sys_privs where grantee='DPS_SERVER';
+select granted_role from dba_role_privs where grantee='DPS_SERVER';
+
+
+select privilege,grantee from dba_sys_privs where grantee in ('BDDK','BDKM','BD_CFDK','BD_CFKM','BD_CTDK','BD_CTKM','BD_DWDK','BD_DWDKNEW','BD_DWKM','BD_GSDK','BD_GSKM','BIGDATA_ADMIN') order by grantee;
+select granted_role,grantee from dba_role_privs where grantee in ('BDDK','BDKM','BD_CFDK','BD_CFKM','BD_CTDK','BD_CTKM','BD_DWDK','BD_DWDKNEW','BD_DWKM','BD_GSDK','BD_GSKM','BIGDATA_ADMIN') order by grantee;
+
+查(对象)权限
+select * from dba_tab_privs WHERE GRANTEE='PLUSTRACE';
+
 #数据库参数信息
 全部参数
 select * from v$parameter;
@@ -174,6 +187,13 @@ create tablespace data02 datafile '/xxx/oradata/stupor/data02_02.dbf' size 1024M
 临时表空间新增
 create temporary tablespace temp2 tempfile '/xxx/oradata/stupor/temp02_01.dbf' size 4096M autoextend off;
 
+临时表占用
+select a.sid, c.serial#, c.username, a.type, a.lmode
+  from v$lock a, dba_objects b, v$session c
+where a.id1 = b.object_id
+   and a.type = 'TO'
+   and b.object_name = 'TEMP_ETL_ID'
+   and a.sid = c.sid
 
 
 分区表
@@ -293,3 +313,110 @@ expdp \'/ as sysdba\' directory=dump PARALLEL=3 dumpfile=dumpfile_%U.dmp logfile
 
 数据泵导入
 impdp  \'/ as sysdba\' directory=dump PARALLEL=3 DUMPFILE=dumpfile_%U.dmp logfile=imp_logfile.log remap_schema=username1:username2 remap_tablespace=tblspc1:tblspc2
+
+
+
+--RMAN备份大小
+select 
+to_char(start_time,'yyyy-mm-dd') start_time,
+to_char(start_time,'day') day, 
+round(sum(OUTPUT_BYTES)/1024/1024/1024,2) SIZE_GB 
+from v$backup_set_details
+group by to_char(start_time,'yyyy-mm-dd'),to_char(start_time,'day') 
+order by start_time desc;	
+--RMAN检测数据文件
+validate tablespace tablespace_name
+validate datafile datafile_num
+validate database
+--可以结合视图查看检测结果
+select * from v$database_block_corruption;
+--查坏块所在的表
+SELECT tablespace_name, segment_type, owner, segment_name, partition_name FROM dba_extents WHERE file_id = 12 and 244992 between block_id AND block_id + blocks-1;
+--启用10231内部事件
+alter system set events='10231 trace name context forever,level 10';
+--关闭10231内部事件
+alter system set events='10231 trace name context off';
+
+--杀进程
+ps aux |grep "LOCAL=NO" |awk '{printf "%s\n", $2}' |xargs kill -9
+
+---分析表(收集统计信息)
+exec dbms_stats.gather_table_stats('BIGDATA_ADMIN','BNDCN_YLD_CRV',cascade => true);
+---查看索引状态
+select owner,index_name,index_type,table_owner,table_name,table_type,partitioned,status from dba_indexes;
+
+---每月清除163数据
+OGG.PRO_CLEAR_LOB
+
+---查进程
+select addr from v$process where spid in('21442','27100','26727');  --得到进程对应的addr
+select sql_id from v$session where paddr in('00000011816D6040','00000011D1749D28','000000119171CA48');  --代入addr的值，得到对应的sql_id
+select * from v$sqlarea where sql_id in ('gr5tpbhqrzzph','cdf0rf4kn9yr2');    --代入sql_id，得到对应的sql
+
+
+select * from v$sqlarea where sql_id in ( select sql_id from v$session where paddr in (select addr from v$process where spid in ('14820','22396','23443')));
+--根据sqlid查SQL
+--根据sid查询已经执行过的sql
+select sql_text,sql_id from v$sqlarea where sql_id='b6x1smt51xcnk';
+--select sql_text from v$sqlarea a,v$session b where a.SQL_ID=b.PREV_SQL_ID and b.SID=&sid;
+--根据sid查询当前执行的sql
+select sql_text from v$sqlarea where (hash_value,address)=(select sql_hash_value,sql_address from v$session where sid=&sid);
+---查看追踪
+set autotrace on
+--根据sqlid查执行计划
+如果通过AWR已经获取了SQL_ID，则可以直接得到执行计划
+select * from table(dbms_xplan.display_awr('fw6mhxqz7c61m'));
+select * from table(dbms_xplan.display_cursor('dqp7nvv60mhg6',null,'ADVANCED ALLSTATS LAST PEEKED_BINDS'));
+
+--启停JOB
+exec dbms_scheduler.enable('BD_PROC.PROC_CHK_BD_DQBG_JOB');
+exec dbms_scheduler.disable('BD_PROC.PROC_CHK_BD_DQBG_JOB');
+
+
+
+--批量创建同义词
+CREATE PUBLIC SYNONYM OSS_ANN_ERR_INFO FOR BIGDATA_ADMIN.OSS_ANN_ERR_INFO;
+CREATE OR REPLACE SYNONYM JYDB_READ.LC_Dividend FOR JYDB.LC_Dividend;
+alter table BIGDATA_ADMIN.OSS_ANN_ERR_INFO add (ENT_TIME DATE NOT NULL);
+--授权
+select 'grant select on '||owner||'.'||object_name||' to BEIGE_READ;'
+from dba_objects
+where owner in ('BIGDATA_AD') and object_type='TABLE';
+--创建
+select 'create or replace synonym BEIGE_READ.'||object_name||' for '||owner||'.'||object_name||';'
+from dba_objects
+where owner in ('BIGDATA_AD') and object_type='TABLE';
+
+--创建DBLINK
+create public database link dbzq_hg    
+connect to tyglq identified by "tyglq@2019"  
+using '(DESCRIPTION =(ADDRESS_LIST =(ADDRESS =(PROTOCOL = TCP)(HOST = 10.1.219.49)(PORT = 1521)))(CONNECT_DATA =(SERVICE_NAME = ferm)))';
+
+hengsheng=
+  (DESCRIPTION =
+    (ADDRESS_LIST =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 10.1.219.49)(PORT = 1521))
+    )
+    (CONNECT_DATA =
+      (SERVICE_NAME = ferm)
+    )
+  )
+
+create public database link
+dbzq_hg connect to tyglq identified by tiger using 'bylw';
+--查看DBLINK
+
+---查看归档日志应用情况
+select sequence#,applied from v$archived_log where applied!='YES' order by 1 desc;
+select * from (select sequence#,applied from v$archived_log where applied!='YES' order by 1 ) where rownum < 11;
+---查看归档gap
+select * from v$archive_gap;
+---注册归档日志
+alter database register logfile '/arch/1_91194_790715753.dbf';
+---查看DG延迟
+select * from v$DATAGUARD_STATS;
+--DG启停日志实时应用
+alter database recover managed standby database using current logfile disconnect from session; --实时
+alter database recover managed standby database cancel; --取消
+alter database recover managed standby database delay 120 disconnect from session; --延时120分钟
+alter database recover managed standby database finsh force; --强制完成同步，停止RFS进程
