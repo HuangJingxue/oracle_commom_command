@@ -40,6 +40,17 @@ select a.tablespace_name t_name,
         group by tablespace_name) b
 where a.tablespace_name = b.tablespace_name;
 
+表空间及对应文件
+select f.tablespace_name||'|'||f.file_name||'|'||f.autoextensible||'|'||f.bytes/1024/1024||'M' ||'|'|| t.initial_extent||'|'||t.next_extent||'|'||t.extent_management||'|'||t.segment_space_management||'|'||t.bigfile from dba_tablespaces t,dba_data_files f where t.tablespace_name=f.tablespace_name;
+
+F.TABLESPACE_NAME||'|'||F.FILE_NAME||'|'||F.AUTOEXTENSIBLE||'|'||F.BYTES/1024/1024||'M'||'|'||T.INITIAL_EXTENT||'|'||T.NEXT_EXTENT||'|'||T.EXTENT_MANA
+------------------------------------------------------------------------------------------------------------------------------------------------------
+USERS|/u01/app/oracle/oradata/orcl/users01.dbf|YES|5M|65536||LOCAL|AUTO|NO
+UNDOTBS1|/u01/app/oracle/oradata/orcl/undotbs01.dbf|YES|195M|65536||LOCAL|MANUAL|NO
+SYSTEM|/u01/app/oracle/oradata/orcl/system01.dbf|YES|870M|65536||LOCAL|MANUAL|NO
+SYSAUX|/u01/app/oracle/oradata/orcl/sysaux01.dbf|YES|2040M|65536||LOCAL|AUTO|NO
+
+
 表空间统计 
 SELECT a.tablespace_name "表空间名称", 
 total / (1024 * 1024) "表空间大小(M)", 
