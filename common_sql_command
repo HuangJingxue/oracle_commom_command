@@ -1,0 +1,170 @@
+# 权限管理
+**授权**
+```sql
+grant <role> to <username>;
+```
+**回收权限**
+
+revoke  <role> from <username>;
+
+#数据库参数信息
+全部参数
+select * from v$parameter;
+
+服务器字符集
+select * from nls_database_parameters;
+
+客户端字符集
+select * from nls_instance_parameters;
+
+会话字符集
+select * from nls_session_parameters;
+
+
+
+空间检查
+各库空间统计
+select owner,sum(bytes)/1024/1024/1024  from dba_segments group by owner order by sum(bytes)/1024/1024/1024;
+
+表空间统计 
+SELECT a.tablespace_name "表空间名称", 
+total / (1024 * 1024) "表空间大小(M)", 
+free / (1024 * 1024) "表空间剩余大小(M)", 
+(total - free) / (1024 * 1024 ) "表空间使用大小(M)", 
+total / (1024 * 1024 * 1024) "表空间大小(G)", 
+free / (1024 * 1024 * 1024) "表空间剩余大小(G)", 
+(total - free) / (1024 * 1024 * 1024) "表空间使用大小(G)", 
+round((total - free) / total, 4) * 100 "使用率 %" 
+FROM (SELECT tablespace_name, SUM(bytes) free 
+FROM dba_free_space 
+GROUP BY tablespace_name) a, 
+(SELECT tablespace_name, SUM(bytes) total 
+FROM dba_data_files 
+GROUP BY tablespace_name) b 
+WHERE a.tablespace_name = b.tablespace_name ;
+
+表空间新增
+create tablespace data02 datafile '/xxx/oradata/stupor/data02_02.dbf' size 1024M autoextend on maxsize 32720M;
+
+临时表空间新增
+create temporary tablespace temp2 tempfile '/xxx/oradata/stupor/temp02_01.dbf' size 4096M autoextend off;
+
+
+
+分区表
+查询数据库下所有分区
+select * from USER_TAB_PARTITIONS;
+
+清空分区内数据
+alter table tab_name truncate partition part_name;
+
+删除分区
+alter table tab_name drop partition part_name;
+
+新建分区
+alter table tab_name add partition part_name values less than (40);
+
+
+
+重建sequence
+生成在原数据库上sequence生成sql命令
+select 'create sequence username.'|| SEQUENCE_NAME || ' minvalue '||MIN_VALUE||' maxvalue '||MAX_VALUE||' start with
+'||LAST_NUMBER||' increment by '||INCREMENT_BY||' cache '||CACHE_SIZE||' ;' from dba_sequences
+where SEQUENCE_OWNER='username';
+
+生成在目标数据库上sequence删除sql命令
+select 'drop sequence username.'|| SEQUENCE_NAME || ' ; ' from dba_sequences
+where SEQUENCE_OWNER='username';
+
+
+最近遇到oracle导出序列时有问题（即序列的当前值和数据库中一些表的ID最大值不一致，我们的数据库表的主键是从序列中取的），需要重新导入序列，发现exp不能单独导出序列，由于数据量庞大，所以又不想再导一遍数据。在网上搜索了一下找到一个比较好的办法： 
+
+
+
+故障排查
+进程排查
+取得数据库目前的进程数。
+select count(*) from v$process;
+
+取得数据库目前的会话数。
+select count(*) from v$session;
+
+
+查询当前各用户活跃进程数
+SELECT *FROM v$session se GROUP BY se.username ;
+
+内存使用排查
+select name,total,round(total-free,2) used, round(free,2) free,round((total-free)/total*100,2) pctused from 
+(select 'SGA' name,(select sum(value/1024/1024) from v$sga) total,
+(select sum(bytes/1024/1024) from v$sgastat where name='free memory')free from dual)
+union
+select name,total,round(used,2)used,round(total-used,2)free,round(used/total*100,2)pctused from (
+select 'PGA' name,(select value/1024/1024 total from v$pgastat where name='aggregate PGA target parameter')total,
+(select value/1024/1024 used from v$pgastat where name='total PGA allocated')used from dual);
+
+锁排查
+查看被锁的表
+select b.owner,b.object_name,a.session_id,a.locked_mode from v$locked_object a,dba_objects b where b.object_id = a.object_id;
+
+查看那个用户那个进程照成死锁
+select b.username,b.sid,b.serial#,logon_time from v$locked_object a,v$session b where a.session_id = b.sid order by b.logon_time;
+
+
+查看被锁会话sql
+SELECT SQ.PARSING_SCHEMA_NAME,SQ.SQL_FULLTEXT FROM V$SQLAREA SQ WHERE SQ.ADDRESS IN('0000000A2F941F48','0000000A57AED278','0000000A2F941F48');
+
+SQL阻塞（后面柱塞）
+select a.inst_id,
+a.sid,
+a.event,
+a.sql_id,
+b.sql_text running_sql,
+c.sql_in_session,
+c.sql_id_in_v$sql,
+c.sql_text blocking_sql,
+a.blocking_session,
+a.blocking_instance
+from gv$session a,
+(select sql_id, sql_text
+from (select sql_id,
+sql_text,
+row_number() over(partition by sql_id order by sql_id) as rn
+from gv$sql)
+where rn = 1) b,
+(select a.inst_id,
+a.sid,
+a.sql_id sql_in_session,
+b.sql_id sql_id_in_v$sql,
+b.sql_text
+from gv$session a, gv$sql b
+where a.inst_id = b.inst_id
+and a.PREV_EXEC_START =b.LAST_ACTIVE_TIME
+and a.USERNAME = b.PARSING_SCHEMA_NAME
+and a.MODULE = b.MODULE
+) c
+where a.sql_id = b.sql_id
+and a.blocking_session is not null
+and a.BLOCKING_SESSION = c.sid
+and a.BLOCKING_INSTANCE = c.inst_id;
+
+
+
+数据泵逻辑导出导入
+检查数据库的目录
+select * from DBA_DIRECTORIES;
+
+创建数据库目录
+create directory dump as '/u01/backup';
+
+将读写的权限赋给system用户
+grant read, write on directory backup to system;
+
+
+
+数据泵导出
+expdp \'/ as sysdba\' directory=dump PARALLEL=3 dumpfile=dumpfile_%U.dmp logfile=exp_logfile.log  compression=all schema=username
+
+
+
+数据泵导入
+impdp  \'/ as sysdba\' directory=dump PARALLEL=3 DUMPFILE=dumpfile_%U.dmp logfile=imp_logfile.log remap_schema=username1:username2 remap_tablespace=tblspc1:tblspc2
