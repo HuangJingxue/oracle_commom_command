@@ -50,6 +50,90 @@ UNDOTBS1|/u01/app/oracle/oradata/orcl/undotbs01.dbf|YES|195M|65536||LOCAL|MANUAL
 SYSTEM|/u01/app/oracle/oradata/orcl/system01.dbf|YES|870M|65536||LOCAL|MANUAL|NO
 SYSAUX|/u01/app/oracle/oradata/orcl/sysaux01.dbf|YES|2040M|65536||LOCAL|AUTO|NO
 
+查看表大小
+SELECT segment_name,BYTES/1024/1024 MB FROM dba_segments WHERE segment_name='TABLE_KEYS' and owner='ETL';
+
+各数据文件使用率
+select
+b.file_name f_name,
+b.tablespace_name t_name,
+b.bytes / 1024 / 1024 MB,
+(b.bytes - sum(nvl(a.bytes, 0))) / 1024 / 1024 use_MB,
+substr((b.bytes - sum(nvl(a.bytes, 0))) / (b.bytes) * 100, 1, 5) Pct
+from dba_free_space a, dba_data_files b
+where a.file_id = b.file_id
+group by b.tablespace_name, b.file_name, b.bytes
+ 10  order by b.tablespace_name;
+
+F_NAME						   T_NAME				  MB	 USE_MB PCT
+-------------------------------------------------- ------------------------------ ---------- ---------- --------------------
+/u01/app/oracle/oradata/orcl/sysaux01.dbf	   SYSAUX				2040	1847.75 90.57
+/u01/app/oracle/oradata/orcl/system01.dbf	   SYSTEM				 870   869.4375 99.93
+/u01/app/oracle/oradata/orcl/undotbs01.dbf	   UNDOTBS1				 195	18.3125 9.391
+/u01/app/oracle/oradata/orcl/users01.dbf	   USERS				   5	      1 20
+
+
+查看可回收空间大小
+select FILE_ID,BLOCK_ID,shrink_mb
+from (select FILE_ID,BLOCK_ID,BYTES/1024/1024 shrink_mb,
+row_number() over(partition by file_id order by BLOCK_ID desc) rn
+from dba_free_space where file_id in (6,7,8,9,10) ) t
+  5  where rn =1 ;
+
+   FILE_ID   BLOCK_ID  SHRINK_MB
+---------- ---------- ----------
+	 7	  128	       4
+       
+       
+       
+查询数据文件空闲块的起始位置       
+select FILE_ID,BLOCK_ID start_block,BLOCK_ID+BLOCKS-1 end_block,BLOCKS
+from dba_free_space
+where file_id in (6,7,8,9,10)
+  4  order by 1;
+
+   FILE_ID START_BLOCK	END_BLOCK     BLOCKS
+---------- ----------- ---------- ----------
+	 7	   128	      639	 512
+
+
+阻塞
+select 
+blocksession.sid        as block_session_sid,
+blocksession.serial#    as block_session_serial#,
+blocksession.username   as block_session_username,
+blocksession.osuser     as block_session_osuser,
+blocksession.machine    as block_session_machine,
+blocksession.status     as block_session_status,
+blockobject.object_name as blocked_table,
+waitsession.sid         as wait_session_sid,
+waitsession.serial#     as wait_session_serial#,
+waitsession.username    as wait_session_username,
+waitsession.osuser      as wait_session_osuser,
+waitsession.machine     as wait_session_machine,
+waitsession.status      as wait_session_status
+from 
+v$lock          blocklock,
+v$lock          waitlock,
+v$session       blocksession,
+v$session       waitsession,
+v$locked_object lockedobject,
+dba_objects     blockobject
+where 
+blocklock.block    = 1
+and blocklock.sid != waitlock.sid
+and blocklock.id1 = waitlock.id1
+and blocklock.id2 = waitlock.id2
+and blocklock.sid = blocksession.sid
+and waitlock.sid  = waitsession.sid
+and lockedobject.session_id = blocksession.sid
+ 30  and lockedobject.object_id  = blockobject.object_id;
+
+方法2：
+select l.session_id,o.owner,o.object_name
+from v$locked_object l,dba_objects o
+where l.object_id=o.object_id;
+
 
 表空间统计 
 SELECT a.tablespace_name "表空间名称", 
